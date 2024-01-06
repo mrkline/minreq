@@ -1,23 +1,21 @@
 /// This example demonstrates probably the most complicated part of
 /// `minreq`. Useful when making loading bars, for example.
+use std::io::Read;
 
 fn main() -> Result<(), minreq::Error> {
-    let mut buffer = Vec::new();
-    for byte in minreq::get("http://example.com").send_lazy()? {
+    let args: Vec<_> = std::env::args().collect();
+    if args.len() != 2 {
+        eprintln!("usage: {} <URL>", args[0]);
+        std::process::exit(1);
+    }
+    for byte in minreq::get(&args[1]).send_lazy()?.bytes() {
         // The connection could have a problem at any point during the
         // download, so each byte needs to be unwrapped.
-        let (byte, len) = byte?;
+        let byte = byte?;
 
         // The `byte` is the current u8 of data we're iterating
         // through.
         print!("{}", byte as char);
-
-        // The `len` is the expected amount of incoming bytes
-        // including the current one: this will be the rest of the
-        // body if the server provided a Content-Length header, or
-        // just the size of the remaining chunk in chunked transfers.
-        buffer.reserve(len);
-        buffer.push(byte);
 
         // Flush the printed text so each char appears on your
         // terminal right away.
