@@ -6,6 +6,7 @@ use crate::{Error, Response, ResponseLazy};
 use std::collections::HashMap;
 use std::fmt;
 use std::fmt::Write;
+use std::io::{Read, Seek};
 
 /// A URL type for requests.
 pub type URL = String;
@@ -70,19 +71,27 @@ impl fmt::Display for Method {
 /// [`send`](struct.Request.html#method.send) or
 /// [`send_lazy`](struct.Request.html#method.send_lazy) on it, as it
 /// doesn't do much on its own.
-#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Request {
     pub(crate) method: Method,
     url: URL,
     params: String,
     headers: HashMap<String, String>,
-    body: Option<Vec<u8>>,
+    pub(crate) body: Option<Body>,
     pub(crate) timeout: Option<u64>,
     pub(crate) max_headers_size: Option<usize>,
     pub(crate) max_status_line_len: Option<usize>,
     max_redirects: usize,
     #[cfg(feature = "proxy")]
     pub(crate) proxy: Option<Proxy>,
+}
+
+/// Something that is seekable and readable. Used with [`Request::with_body_lazy`]
+pub trait SeekableRead: Read + Seek + Send + 'static {}
+impl<T> SeekableRead for T where T: Read + Seek + Send + 'static {}
+
+pub(crate) enum Body {
+    Buffer(Vec<u8>),
+    Lazy(Box<dyn SeekableRead>)
 }
 
 impl Request {
@@ -124,8 +133,19 @@ impl Request {
     pub fn with_body<T: Into<Vec<u8>>>(mut self, body: T) -> Request {
         let body = body.into();
         let body_length = body.len();
-        self.body = Some(body);
+        self.body = Some(Body::Buffer(body));
         self.with_header("Content-Length", format!("{}", body_length))
+    }
+
+    /// Sets the request body to a boxed [`std::io::Read`] trait.
+    /// Useful when the body is a file or something large we don't want to
+    /// first collect into a buffer.
+    pub fn with_body_lazy<R: SeekableRead>(mut self, body: R) -> Request {
+        self.body = Some(Body::Lazy(Box::new(body)));
+        // If with_body() was called previously, get rid of the now-bogus
+        // content length header.
+        self.headers.remove("Content-Length");
+        self
     }
 
     /// Adds given key and value as query parameter to request url
@@ -414,12 +434,8 @@ impl ParsedRequest {
 
     /// Returns the HTTP request as bytes, ready to be sent to
     /// the server.
-    pub(crate) fn as_bytes(&self) -> Vec<u8> {
-        let mut head = self.get_http_head().into_bytes();
-        if let Some(body) = &self.config.body {
-            head.extend(body);
-        }
-        head
+    pub(crate) fn head_bytes(&self) -> Vec<u8> {
+        self.get_http_head().into_bytes()
     }
 
     /// Returns the redirected version of this Request, unless an

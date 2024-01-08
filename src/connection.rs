@@ -3,7 +3,7 @@
     any(feature = "openssl", feature = "native-tls")
 ))]
 use crate::native_tls::{TlsConnector, TlsStream};
-use crate::request::ParsedRequest;
+use crate::request::{Body, ParsedRequest};
 use crate::{Error, Method, ResponseLazy};
 #[cfg(feature = "https-rustls")]
 use once_cell::sync::Lazy;
@@ -165,7 +165,7 @@ impl Connection {
     pub(crate) fn send_https(mut self) -> Result<ResponseLazy, Error> {
         enforce_timeout(self.timeout_at, move || {
             self.request.url.host = ensure_ascii_host(self.request.url.host)?;
-            let bytes = self.request.as_bytes();
+            let head_bytes = self.request.head_bytes();
 
             // Rustls setup
             log::trace!("Setting up TLS parameters for {}.", self.request.url.host);
@@ -184,7 +184,17 @@ impl Connection {
             let mut tls = StreamOwned::new(sess, tcp); // I don't think this actually does any communication.
             log::trace!("Writing HTTPS request to {}.", self.request.url.host);
             let _ = tls.get_ref().set_write_timeout(self.timeout()?);
-            tls.write_all(&bytes)?;
+            tls.write_all(&head_bytes)?;
+            if let Some(b) = self.request.config.body.as_mut() {
+                match b {
+                    Body::Buffer(b) => tls.write_all(&b),
+                    Body::Lazy(ref mut r) => {
+                        r.rewind()?;
+                        let _ = io::copy(r, &mut tls)?;
+                        Ok(())
+                    }
+                }?
+            }
 
             // Receive request
             log::trace!("Reading HTTPS response from {}.", self.request.url.host);
@@ -206,7 +216,7 @@ impl Connection {
     pub(crate) fn send_https(mut self) -> Result<ResponseLazy, Error> {
         enforce_timeout(self.timeout_at, move || {
             self.request.url.host = ensure_ascii_host(self.request.url.host)?;
-            let bytes = self.request.as_bytes();
+            let head_bytes = self.request.head_bytes();
 
             log::trace!("Setting up TLS parameters for {}.", self.request.url.host);
             let dns_name = &self.request.url.host;
@@ -231,7 +241,17 @@ impl Connection {
             };
             log::trace!("Writing HTTPS request to {}.", self.request.url.host);
             let _ = tls.get_ref().set_write_timeout(self.timeout()?);
-            tls.write_all(&bytes)?;
+            tls.write_all(&head_bytes)?;
+            if let Some(b) = self.request.config.body.as_mut() {
+                match b {
+                    Body::Buffer(b) => tls.write_all(&b),
+                    Body::Lazy(ref mut r) => {
+                        r.rewind()?;
+                        let _ = io::copy(r, &mut tls)?;
+                        Ok(())
+                    }
+                }?
+            }
 
             // Receive request
             log::trace!("Reading HTTPS response from {}.", self.request.url.host);
@@ -249,7 +269,7 @@ impl Connection {
     pub(crate) fn send(mut self) -> Result<ResponseLazy, Error> {
         enforce_timeout(self.timeout_at, move || {
             self.request.url.host = ensure_ascii_host(self.request.url.host)?;
-            let bytes = self.request.as_bytes();
+            let head_bytes = self.request.head_bytes();
 
             log::trace!("Establishing TCP connection to {}.", self.request.url.host);
             let mut tcp = self.connect()?;
@@ -257,7 +277,17 @@ impl Connection {
             // Send request
             log::trace!("Writing HTTP request.");
             let _ = tcp.set_write_timeout(self.timeout()?);
-            tcp.write_all(&bytes)?;
+            tcp.write_all(&head_bytes)?;
+            if let Some(b) = self.request.config.body.as_mut() {
+                match b {
+                    Body::Buffer(b) => tcp.write_all(&b),
+                    Body::Lazy(ref mut r) => {
+                        r.rewind()?;
+                        let _ = io::copy(r, &mut tcp)?;
+                        Ok(())
+                    }
+                }?
+            }
 
             // Receive response
             log::trace!("Reading HTTP response.");
